@@ -1,0 +1,425 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to link SAM to an SNS topic
+Parameters:
+  # Parameters for SAM
+  CleanerLambdaARN:
+    Type: String
+    Description: ARN of SAM Cleaning Lambda function
+  CleanerRole:
+    Type: String
+    Description: Name of the role associated with the cleaning lambda
+
+  # Parameter for networking
+  VpcCidr:
+    Type: String 
+    Description: CIDR of VPC
+    Default: 10.0.0.0/16
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-8]))$"
+    ConstraintDescription: CIDR must conform to x.x.x.x/16-28
+  SubnetCidr:
+    Type: String
+    Description: CIDR of subnet
+    Default: 10.0.0.0/24
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-8]))$"
+    ConstraintDescription: "CIDR must conform to x.x.x.x/16-28"
+  IncomingCidr:
+    Type: String
+    Description: CIDR of incoming ssh
+    Default: 0.0.0.0/0
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+    ConstraintDescription: CIDR must conform to x.x.x.x/16-28
+  AZ:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: AZ of subnet (must specify only one)
+
+  # Parameters for EC2
+  S3Bucket:
+    Type: String
+    Description: EC2 instances will create test objects in this bucket.
+  Ec2KeyName:
+    Type: String
+    Description: Key-pair name
+  Ami:
+    Type: String
+    AllowedPattern: '^(default|ami-[0-9a-z]+)$'
+    Default: default
+  RootDevice:
+    Type: String
+    Description: "Root device: /dev/xvda for alinux, /dev/sda1 for other distro"
+    Default: /dev/xvda
+  EbsSize:
+    Type: Number
+    Description: Size of EBS volume (in GB)
+    Default: 8
+  EbsType:
+    Type: String
+    Description: EBS type
+    AllowedValues: ['gp2', 'io1', 'st1', 'sc1']
+    Default: gp2
+  InstanceType:
+    Type: String
+    Description: Instance type for ASG instances
+    Default: t2.micro
+Mappings:
+  RegionMap:
+    ap-northeast-1:
+      AMI: ami-ceafcba8
+    ap-northeast-2:
+      AMI: ami-863090e8
+    ap-south-1:
+      AMI: ami-531a4c3c
+    ap-southeast-1:
+      AMI: ami-68097514
+    ap-southeast-2:
+      AMI: ami-942dd1f6
+    ca-central-1:
+      AMI: ami-a954d1cd
+    cn-north-1:
+      AMI: ami-cb19c4a6
+    eu-central-1:
+      AMI: ami-5652ce39
+    eu-west-1:
+      AMI: ami-d834aba1
+    eu-west-2:
+      AMI: ami-403e2524
+    eu-west-3:
+      AMI: ami-8ee056f3
+    sa-east-1:
+      AMI: ami-84175ae8
+    us-east-1:
+      AMI: ami-97785bed
+    us-east-2:
+      AMI: ami-f63b1193
+    us-gov-west-1:
+      AMI: ami-56f87137
+    us-west-1:
+      AMI: ami-824c4ee2
+    us-west-2:
+      AMI: ami-f2d3638a
+Resources:
+  ############################## SAM configuration #############################
+  # Allow the SAM cleaner lambda to clean specific resources.
+  CleanAlarmPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow cleaner SAM to delete alarms
+      Roles:
+        - !Ref CleanerRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: cloudwatch:DeleteAlarms
+            Resource: '*'
+
+  CleanS3ObjectPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow cleaner SAM to delete S3 objects in specified bucket
+      Roles:
+        - !Ref CleanerRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 's3:DeleteObject'
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
+
+  # Subscribe all the SAM lambdas to an SNS topic
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+      - Endpoint: !Ref CleanerLambdaARN
+        Protocol: lambda
+
+  # IMPORTANT: allow SNS to invoke the SAM lambdas
+  SAMInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CleanerLambdaARN
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref NotificationTopic
+  ########################## End of SAM configuration ##########################
+
+  VPC:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: !Ref VpcCidr
+
+  IGW:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  IGWRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachIGW
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref SubnetCidr
+      AvailabilityZone: !Ref AZ
+      MapPublicIpOnLaunch: true
+
+  SubnetRTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Security group for autoscaling group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref IncomingCidr
+
+  SGIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SG
+      IpProtocol: -1
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId: !Ref SG
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        # Allow instance to register resource to cleaner SAM
+        - PolicyName: register-via-sns
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref NotificationTopic
+        # Allow instance to create sample alarm
+        - PolicyName: create-alarm-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:EnableAlarmActions
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:DescribeAlarms
+                Resource: '*'
+        # Allow instance to create S3 objects only in the S3 bucket
+        - PolicyName: create-s3object-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Principal:
+              Service: ec2.amazonaws.com
+            Effect: Allow
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  ASLC:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /usr/local/bin/register-resource:
+              mode: '000755'
+              owner: root
+              group: root
+              content: !Sub |
+                #!/bin/bash
+                instance=$(wget -q -O- http://169.254.169.254/latest/meta-data/instance-id)
+
+                error() {
+                    echo "$@" >&2
+                    exit 1
+                }
+
+                parse_args() {
+                    while [[ $# -gt 0 ]]; do
+                        key="$1"
+                        case ${!key} in
+                        -h|--help)
+                            echo Usage: ${!BASH_SOURCE[0]} --name NAME --service SERVICE --resource RESOURCE [--kwarg \"{ 'a': 'b', 'c': ['d'], ...}\"]
+                            exit 0
+                            ;;
+                        --name)
+                            name="$2"
+                            shift 2
+                            ;;
+                        --service)
+                            service="$2"
+                            shift 2
+                            ;;
+                        --resource)
+                            resource="$2"
+                            shift 2
+                            ;;
+                        --kwargs)
+                            kwargs="$2"
+                            shift 2
+                            ;;
+                        *)
+                            error "Unknown argument: $1"
+                        esac
+                    done
+
+                    # Ensure mandatory information
+                    [[ -z "${!name}" ]] && error "--name not specified"
+                    [[ -z "${!service}" ]] && error "--service not specified"
+                    [[ -z "${!resource}" ]] && error "--resource not specified"
+                }
+
+                main() {
+                    parse_args "$@"
+                    mattr='{"sam-cleaner":{"DataType":"String","StringValue":"register"}}'
+                    message=$(cat << EOF
+                {
+                  "instance": "${!instance}",
+                  "name": "${!name}",
+                  "properties": {
+                    "service": "${!service}",
+                    "resource": "${!resource}",
+                    "kwargs": $(python -c "from __future__ import print_function; import json; print(json.dumps(eval(\"${!kwargs[@]}\")))")
+                  }
+                }
+                EOF
+                )
+                    aws --region ${AWS::Region} sns publish \
+                        --topic-arn ${NotificationTopic} \
+                        --message "${!message}" --message-attributes "${!mattr}"
+                }
+
+                main "$@"
+            /usr/local/bin/alarm:
+              mode: '000755'
+              owner: root
+              group: root
+              content: !Sub |
+                #!/bin/bash -x
+                InstanceId=$(wget -q -O- http://169.254.169.254/latest/meta-data/instance-id)
+
+                # Create alarm
+                alarm_name=${AWS::StackName}-TestAlarm-${!InstanceId}
+                aws --region ${AWS::Region} cloudwatch put-metric-alarm \
+                    --alarm-name ${!alarm_name} \
+                    --alarm-description "Alarm when EC2 instance fails status checks for 5 minutes" \
+                    --no-actions-enabled \
+                    --metric-name StatusCheckFailed_System \
+                    --namespace AWS/EC2 \
+                    --statistic Minimum \
+                    --dimensions Name=InstanceId,Value=$InstanceId \
+                    --period 60 \
+                    --evaluation-periods 5 \
+                    --threshold 1 \
+                    --comparison-operator GreaterThanOrEqualToThreshold
+
+                # Register to SAM
+                /usr/local/bin/register-resource \
+                    --name "${!alarm_name}" \
+                    --service "cloudwatch" --resource alarms \
+                    --kwargs "{'AlarmNames': ['${!alarm_name}']}"
+            /usr/local/bin/s3-object:
+              mode: '000755'
+              owner: root
+              group: root
+              content: !Sub |
+                #!/bin/bash -x
+                InstanceId=$(wget -q -O- http://169.254.169.254/latest/meta-data/instance-id)
+
+                # Create S3 object
+                s3object=${!InstanceId}/system-release
+                aws s3 cp /etc/system-release s3://${S3Bucket}/${!InstanceId}
+
+                # Register to SAM
+                /usr/local/bin/register-resource \
+                    --name "s3://${S3Bucket}/${!s3object}" \
+                    --service "s3" --resource object \
+                    --kwargs "{'Bucket': '${S3Bucket}', 'Key': '${!InstanceId}'}"
+          commands:
+            01_alarm:
+              command: /usr/local/bin/alarm
+            02_s3_object:
+              command: /usr/local/bin/s3-object
+    Properties:
+      KeyName: !Ref Ec2KeyName
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      SecurityGroups:
+        - !Ref SG
+      InstanceType: !Ref InstanceType
+      BlockDeviceMappings:
+        - DeviceName: !Ref RootDevice
+          Ebs:
+            VolumeSize: !Ref EbsSize
+            VolumeType: !Ref EbsType
+            DeleteOnTermination: true
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -x
+          exec > >(tee /var/log/user-data.log | logger -t user-data) 2>&1
+          /opt/aws/bin/cfn-init \
+              --region ${AWS::Region} \
+              --stack ${AWS::StackId} \
+              --resource ASLC
+
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    
+    # Instruct CloudFormation to delete this ASG first, and only then
+    # unsubscribe the SAM from the SNS topic and revoke the SAM's access to this
+    # stack's resources. Otherwise, you may still get orphan resources when
+    # deleting the whole stack.
+    DependsOn:
+      - CleanAlarmPolicy
+      - CleanS3ObjectPolicy
+      - SAMInvokePermission
+
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref Subnet
+      LaunchConfigurationName: !Ref ASLC
+      MaxSize: 1
+      MinSize: 1
+      NotificationConfigurations:
+        - TopicARN: !Ref NotificationTopic
+          NotificationTypes:
+            - autoscaling:EC2_INSTANCE_TERMINATE
+            - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
