@@ -17,6 +17,8 @@ This SAM deletes resources that `boto3` can delete with just a single call.
 This SAM does not support resources that `boto3` cannot delete recursively with
 just a single call. Examples are S3 buckets or S3 directories.
 
+This SAM can only delete non-VPC resources.
+
 Do note also the limitations on the maximum concurrent invocations of Lambda
 functions, and DynamoDB read/write capacity units.
 
