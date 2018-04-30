@@ -16,7 +16,7 @@ AZ_NAME=$(REGION)$(AZ)
 .PHONY : create_bucket package deploy sam-output create-stack update-stack clean-s3
 
 sam: package deploy
-all: package deploy sam-output create-stack update-stack
+all: package deploy sam-output create-stack
 
 create_bucket :
 	-aws --region $(REGION) s3api create-bucket \
