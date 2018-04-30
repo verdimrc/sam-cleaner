@@ -125,8 +125,7 @@ Resources:
             Action: 's3:DeleteObject'
             Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
 
-  # SNS topic. Purposely not using embedded subscription as on stack delete, Cfn
-  # does not auto-unsubscribe embedded subscription.
+  # SNS topic. Note that Cfn does not auto-unsubscribe embedded subscriptions.
   NotificationTopic:
     Type: AWS::SNS::Topic
 
