@@ -125,13 +125,18 @@ Resources:
             Action: 's3:DeleteObject'
             Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
 
-  # Subscribe all the SAM lambdas to an SNS topic
+  # SNS topic. Purposely not using embedded subscription as on stack delete, Cfn
+  # does not auto-unsubscribe embedded subscription.
   NotificationTopic:
     Type: AWS::SNS::Topic
+
+  # Subscribe cleaner lambda to SNS topic
+  CleanLambdaSubscription:
+    Type: AWS::SNS::Subscription
     Properties:
-      Subscription:
-      - Endpoint: !Ref CleanerLambdaARN
-        Protocol: lambda
+      Endpoint: !Ref CleanerLambdaARN
+      Protocol: lambda
+      TopicArn: !Ref NotificationTopic
 
   # IMPORTANT: allow SNS to invoke the SAM lambdas
   SAMInvokePermission:
@@ -403,14 +408,16 @@ Resources:
   ASG:
     Type: AWS::AutoScaling::AutoScalingGroup
     
-    # Instruct CloudFormation to delete this ASG first, and only then
-    # unsubscribe the SAM from the SNS topic and revoke the SAM's access to this
-    # stack's resources. Otherwise, you may still get orphan resources when
-    # deleting the whole stack.
+    # Instruct CloudFormation to delete this ASG first before deleting the SNS
+    # topic and revoking SAM's permission. This ensures termination events still
+    # get pushed to the SNS topic, SNS can still trigger the SAM lambda, and
+    # SAM lambda can still access this stack's resources. Otherwise, you may
+    # still get orphan resources when deleting this stack.
     DependsOn:
       - CleanAlarmPolicy
       - CleanS3ObjectPolicy
       - SAMInvokePermission
+      - CleanLambdaSubscription
 
     Properties:
       VPCZoneIdentifier:
